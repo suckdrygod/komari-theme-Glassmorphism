@@ -316,7 +316,9 @@ export class RpcClient {
         }
       }
 
-      const ws = new WebSocket(wsUrl)
+      // Older Safari versions are more reliable with an explicit string than
+      // with a URL object passed directly to the WebSocket constructor.
+      const ws = new WebSocket(wsUrl.toString())
       this.ws = ws
       let opened = false
       let settled = false
