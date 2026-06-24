@@ -1,10 +1,11 @@
 import type { PublicSettings } from '@/utils/api'
 import type { ByteDecimalsConfig } from '@/utils/helper'
-import { usePreferredDark, useStorageAsync } from '@vueuse/core'
+import { useStorageAsync } from '@vueuse/core'
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 
 export type ThemeMode = 'auto' | 'light' | 'dark'
+export type ManagedThemeMode = 'beijing' | 'light' | 'dark'
 export type GeneralCardKey
   = | 'memory'
     | 'disk'
@@ -98,8 +99,26 @@ function isValidThemeMode(value: unknown): value is ThemeMode {
   return value === 'auto' || value === 'light' || value === 'dark'
 }
 
+function isValidManagedThemeMode(value: unknown): value is ManagedThemeMode {
+  return value === 'beijing' || value === 'light' || value === 'dark'
+}
+
 function isGeneralCardKey(value: string): value is GeneralCardKey {
   return (ALL_GENERAL_CARD_KEYS as readonly string[]).includes(value)
+}
+
+function getBeijingHour(timestamp: number): number {
+  const hour = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    hour12: false,
+  }).format(new Date(timestamp))
+
+  const parsed = Number.parseInt(hour, 10)
+  if (!Number.isFinite(parsed))
+    return new Date(timestamp).getHours()
+
+  return parsed === 24 ? 0 : parsed
 }
 
 const useAppStore = defineStore('app', () => {
@@ -118,6 +137,13 @@ const useAppStore = defineStore('app', () => {
 
   // 使用 null 表示未设置，等待主题配置加载后决定
   const storedViewMode = useStorageAsync<NodeViewMode | null>('nodeViewMode', null, localStorage)
+  const beijingTimeTick = ref(Date.now())
+
+  if (typeof window !== 'undefined') {
+    window.setInterval(() => {
+      beijingTimeTick.value = Date.now()
+    }, 60 * 1000)
+  }
 
   // 计算属性：从主题配置获取默认视图模式
   const defaultViewMode = computed<NodeViewMode>(() => {
@@ -425,8 +451,17 @@ const useAppStore = defineStore('app', () => {
     }
   }, { immediate: true })
 
-  // 使用 VueUse 的 usePreferredDark 检测系统主题偏好
-  const prefersDark = usePreferredDark()
+  const managedThemeMode = computed<ManagedThemeMode>(() => {
+    const settings = publicSettings.value?.theme_settings
+    if (settings && isValidManagedThemeMode(settings.themeMode))
+      return settings.themeMode
+    return 'beijing'
+  })
+
+  const isBeijingDaytime = computed<boolean>(() => {
+    const hour = getBeijingHour(beijingTimeTick.value)
+    return hour >= 7 && hour < 19
+  })
 
   watch(themeMode, (mode) => {
     if (!isValidThemeMode(mode)) {
@@ -436,10 +471,10 @@ const useAppStore = defineStore('app', () => {
 
   // 计算当前是否为暗色模式
   const isDark = computed(() => {
-    if (themeMode.value === 'auto') {
-      return prefersDark.value
+    if (managedThemeMode.value === 'beijing') {
+      return !isBeijingDaytime.value
     }
-    return themeMode.value === 'dark'
+    return managedThemeMode.value === 'dark'
   })
 
   const resolvedThemeMode = computed<'light' | 'dark'>(() => isDark.value ? 'dark' : 'light')
@@ -453,19 +488,8 @@ const useAppStore = defineStore('app', () => {
   })
 
   function updateThemeMode(mode?: ThemeMode) {
-    if (mode) {
-      themeMode.value = isValidThemeMode(mode) ? mode : 'auto'
-      return
-    }
-
-    const nextMode: Record<ThemeMode, ThemeMode> = {
-      auto: 'light',
-      light: 'dark',
-      dark: 'auto',
-    }
-
-    const currentMode = isValidThemeMode(themeMode.value) ? themeMode.value : 'auto'
-    themeMode.value = nextMode[currentMode]
+    // 主题模式由 Komari 后台的主题配置统一控制，避免不同设备使用本地偏好导致显示不一致。
+    void mode
   }
 
   function updateLoginState(loggedIn: boolean) {
@@ -475,7 +499,9 @@ const useAppStore = defineStore('app', () => {
   return {
     loading,
     themeMode,
+    managedThemeMode,
     isDark,
+    isBeijingDaytime,
     resolvedThemeMode,
     lang,
     nodeSelectedGroup,

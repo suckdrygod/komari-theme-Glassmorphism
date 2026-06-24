@@ -38,6 +38,8 @@ let globe: Globe | null = null
 const INITIAL_THETA = 0.22
 const MIN_THETA = -0.65
 const MAX_THETA = 0.65
+const NON_SLUG_CHARS_RE = /[^a-z0-9]+/g
+const EDGE_DASHES_RE = /^-+|-+$/g
 const CHINA_COORD = getCoordByCode('CN') ?? [35.8617, 104.1954]
 const DEFAULT_PHI = normalizePhi(-Math.PI / 2 - CHINA_COORD[1] * Math.PI / 180)
 let phi = DEFAULT_PHI
@@ -134,11 +136,25 @@ function shouldKeepStaticRedraw(): boolean {
   return now < staticRedrawUntil
 }
 
-function getCappedDpr(): number {
+function getRenderQuality(): { devicePixelRatio: number, mapSamples: number } {
   if (typeof window === 'undefined')
-    return 1.5
-  const raw = window.devicePixelRatio || 1
-  return Math.min(Math.max(raw, 1.5), 2)
+    return { devicePixelRatio: 1.5, mapSamples: 8000 }
+
+  const rawDpr = window.devicePixelRatio || 1
+  const compactViewport = window.matchMedia?.('(max-width: 640px)').matches ?? window.innerWidth <= 640
+
+  return compactViewport
+    ? {
+        // iPhone 14 Pro and similar devices report DPR 3. Rendering the globe
+        // at that value creates nine times as many pixels as DPR 1 and can
+        // exhaust WebGL resources on older iOS releases.
+        devicePixelRatio: Math.min(rawDpr, 1.5),
+        mapSamples: 8000,
+      }
+    : {
+        devicePixelRatio: Math.min(rawDpr, 2),
+        mapSamples: 12000,
+      }
 }
 
 interface RegionCluster {
@@ -164,8 +180,8 @@ function nodeClusterInfo(node: NodeData): { id: string, code: string, coord: [nu
     const code = (geo.countryCode || countryCode || '').toUpperCase()
     const citySlug = (geo.city || `${geo.lat.toFixed(2)},${geo.lng.toFixed(2)}`)
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
+      .replace(NON_SLUG_CHARS_RE, '-')
+      .replace(EDGE_DASHES_RE, '')
     return {
       id: `${(code || 'xx').toLowerCase()}-${citySlug || 'city'}`,
       code: code || (countryCode ?? ''),
@@ -409,15 +425,16 @@ function getRenderSize() {
 function buildInitialOptions(): COBEOptions {
   const colors = themeColors.value
   const { width, height } = getRenderSize()
+  const quality = getRenderQuality()
   return {
-    devicePixelRatio: 3,
+    devicePixelRatio: quality.devicePixelRatio,
     width,
     height,
     phi,
     theta,
     dark: colors.dark,
     diffuse: 0.5, // 从 2.2 降到 1.0，减少白色溢光
-    mapSamples: 16000, // 适中采样：点阵更稀疏，旋转时摩尔纹更轻（过高采样会加剧像素干涉）
+    mapSamples: quality.mapSamples,
     mapBrightness: colors.mapBrightness,
     baseColor: colors.baseColor,
     markerColor: colors.markerColor,
@@ -601,6 +618,15 @@ function onPointerUp(e: PointerEvent) {
     target.releasePointerCapture(e.pointerId)
 }
 
+function onWebGLContextLost(event: Event) {
+  event.preventDefault()
+  pauseRaf()
+}
+
+function onWebGLContextRestored() {
+  void rebuildGlobe()
+}
+
 const totalServers = computed(() => displayNodes.value.length)
 const onlineServers = computed(() => displayNodes.value.filter(node => node.online).length)
 const offlineServers = computed(() => totalServers.value - onlineServers.value)
@@ -621,6 +647,7 @@ function formatRate(bytesPerSec: number): string {
       ref="canvasRef"
       class="earth-globe-canvas absolute inset-0 w-full h-full select-none touch-none cursor-grab active:cursor-grabbing"
       @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp"
+      @webglcontextlost="onWebGLContextLost" @webglcontextrestored="onWebGLContextRestored"
     />
 
     <template v-for="cluster in regionClusters" :key="cluster.id">
